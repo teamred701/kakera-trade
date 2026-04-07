@@ -190,7 +190,8 @@ function App() {
   const loadPosts = async(silent=false)=>{
     if(!silent)setLoading(true);
     try{
-      await deleteOldPosts();
+      const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+      try { await sbFetch("/posts?created_at=lt." + cutoff, { method: "DELETE", prefer: "return=minimal" }); } catch(e) {}
       const data=await db.getPosts();
       const parsed=data.map(parsePost);
       if(silent){
