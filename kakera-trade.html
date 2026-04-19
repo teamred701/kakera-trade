@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>カケラTrade</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: linear-gradient(135deg,#0a0a0f,#111118 50%,#0d0d14); min-height: 100vh; font-family: 'Hiragino Sans', 'Noto Sans JP', sans-serif; color: #e8e8f0; }
+  input { font-family: inherit; }
+  button { font-family: inherit; }
+  ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: #111; } ::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+const SUPABASE_URL = "https://isxirwwtjrguwsctrjdo.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlzeGlyd3d0anJndXdzY3RyamRvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU0Njc4MzEsImV4cCI6MjA5MTA0MzgzMX0.VgnvoyDIMu2gfxuNpIbBhhx9GDwzF_mbQrjRCtlSbs4";
+const FIXED_WEBHOOK = "https://discord.com/api/webhooks/1490687473733337130/lN5TaFENaIt1YHf_O0ZfnQ42V5lL_-A2-RJCnoEdD2Gp05SqN-OKurttg44m06q0Hsai";
+const ADMIN_PASSWORD = "teamred701";
+
+async function sbFetch(path, options = {}) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1${path}`, {
+    ...options,
+    headers: {
+      "apikey": SUPABASE_KEY,
+      "Authorization": `Bearer ${SUPABASE_KEY}`,
+      "Content-Type": "application/json",
+      "Prefer": options.prefer || "return=representation",
+      ...(options.headers || {}),
+    },
+  });
+  if (!res.ok) { const err = await res.text(); throw new Error(err); }
+  const text = await res.text();
+  return text ? JSON.parse(text) : [];
+}
+
+const db = {
+  getPosts: () => sbFetch("/posts?order=created_at.desc&limit=50"),
+  addPost: (post) => sbFetch("/posts", { method: "POST", body: JSON.stringify(post), headers: {"Prefer": "return=minimal"} }),
+  deletePost: (id) => sbFetch(`/posts?id=eq.${id}`, { method: "DELETE", prefer: "return=minimal" }),
+};
+
+const KAKERA_LIST = [
+  { id:1,  name:"ナルカミ", color:"#74B9FF", emoji:"🦅" },
+  { id:2,  name:"ミタマ",   color:"#A29BFE", emoji:"👻" },
+  { id:3,  name:"リーリー", color:"#FD79A8", emoji:"🐼" },
+  { id:4,  name:"オロチ",   color:"#55EFC4", emoji:"🐍" },
+  { id:5,  name:"ルナ",     color:"#FFEAA7", emoji:"🐰" },
+  { id:6,  name:"ヤーマ",   color:"#FF9F43", emoji:"👹" },
+  { id:7,  name:"トワ",     color:"#00CEC9", emoji:"🐈‍⬛" },
+  { id:8,  name:"セツナ",   color:"#FF6B6B", emoji:"🐈" },
+  { id:9,  name:"マカミ",   color:"#6C5CE7", emoji:"🐺" },
+  { id:10, name:"エマ",     color:"#FDCB6E", emoji:"🦄" },
+  { id:11, name:"タルト",   color:"#E17055", emoji:"🐢" },
+];
+
+function calcScore(myWant, myOffer, theirWant, theirOffer) {
+  return myOffer.filter(id => theirWant.includes(id)).length
+       + theirOffer.filter(id => myWant.includes(id)).length;
+}
+
+async function sendDiscord(webhookUrl, embed) {
+  try {
+    const r = await fetch(webhookUrl, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({embeds:[embed]}) });
+    return r.ok;
+  } catch { return false; }
+}
+
+async function sendDiscordWithMention(webhookUrl, mention, embed) {
+  try {
+    const body = { embeds:[embed] };
+    if(mention) body.content = mention + " マッチしました！";
+    const r = await fetch(webhookUrl, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body) });
+    return r.ok;
+  } catch { return false; }
+}
+
+function parsePost(p) {
+  return { ...p, want:JSON.parse(p.want||"[]"), offer:JSON.parse(p.offer||"[]"), postedAt:new Date(p.created_at).toLocaleString("ja-JP",{month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit"}) };
+}
+
+function Bell({ notifs, onClear }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef();
+  useEffect(()=>{ const h=e=>{if(ref.current&&!ref.current.contains(e.target))setOpen(false);}; document.addEventListener("mousedown",h); return()=>document.removeEventListener("mousedown",h); },[]);
+  const unread = notifs.filter(n=>!n.read).length;
+  return (
+    <div ref={ref} style={{position:"relative"}}>
+      <button onClick={()=>setOpen(o=>!o)} style={{background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:10,width:40,height:40,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,position:"relative"}}>
+        🔔{unread>0&&<span style={{position:"absolute",top:4,right:4,width:16,height:16,borderRadius:"50%",background:"#ef4444",fontSize:10,fontWeight:700,color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",border:"2px solid #0a0a0f"}}>{unread}</span>}
+      </button>
+      {open&&<div style={{position:"absolute",right:0,top:48,width:300,maxHeight:380,overflowY:"auto",background:"#16161f",border:"1px solid rgba(255,255,255,0.1)",borderRadius:14,boxShadow:"0 20px 60px rgba(0,0,0,0.6)",zIndex:200}}>
+        <div style={{padding:"12px 16px",borderBottom:"1px solid rgba(255,255,255,0.06)",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+          <span style={{fontWeight:700,fontSize:14}}>通知</span>
+          {notifs.length>0&&<button onClick={onClear} style={{background:"none",border:"none",color:"#666",fontSize:12,cursor:"pointer"}}>消去</button>}
+        </div>
+        {notifs.length===0?<div style={{padding:24,textAlign:"center",color:"#555",fontSize:13}}>通知はありません</div>
+        :notifs.map(n=><div key={n.id} style={{padding:"12px 16px",borderBottom:"1px solid rgba(255,255,255,0.04)",background:n.read?"transparent":"rgba(168,85,247,0.06)"}}>
+          <div style={{fontSize:13,color:n.isMatch?"#c084fc":"#ccc",fontWeight:n.isMatch?600:400}}>{n.title}</div>
+          <div style={{fontSize:12,color:"#555",marginTop:3}}>{n.body}</div>
+          <div style={{fontSize:11,color:"#444",marginTop:4}}>{n.time}</div>
+        </div>)}
+      </div>}
+    </div>
+  );
+}
+
+function Toggle({ on, onToggle }) {
+  return <div onClick={onToggle} style={{width:40,height:22,borderRadius:11,flexShrink:0,background:on?"linear-gradient(90deg,#a855f7,#6366f1)":"rgba(255,255,255,0.1)",border:"1px solid rgba(255,255,255,0.1)",position:"relative",transition:"background 0.2s",cursor:"pointer"}}>
+    <div style={{position:"absolute",top:2,left:on?18:2,width:16,height:16,borderRadius:"50%",background:"#fff",transition:"left 0.2s",boxShadow:"0 1px 4px rgba(0,0,0,0.4)"}}/>
+  </div>;
+}
+
+function SettingsTab({settings, setSettings, testStatus, setTestStatus}) {
+  const [adminInput, setAdminInput] = useState("");
+  const [adminUnlocked, setAdminUnlocked] = useState(false);
+  const [adminError, setAdminError] = useState(false);
+
+  const tryUnlock = () => {
+    if(adminInput === ADMIN_PASSWORD){ setAdminUnlocked(true); setAdminError(false); }
+    else { setAdminError(true); }
+  };
+
+  return <div style={{display:"grid",gap:16}}>
+    {/* プロフィール設定 */}
+    <div style={{background:"rgba(88,101,242,0.08)",border:"1px solid rgba(88,101,242,0.25)",borderRadius:14,padding:20}}>
+      <h3 style={{margin:"0 0 16px",fontSize:15,color:"#818cf8",fontWeight:700}}>👤 プロフィール設定</h3>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
+        {[["myUser","あなたの名前","MyNFTName"],["myContact","連絡先（X/Discord）","@yourname"]].map(([k,label,ph])=><div key={k}>
+          <label style={{fontSize:12,color:"#888",display:"block",marginBottom:6}}>{label}</label>
+          <input value={settings[k]} onChange={e=>setSettings({...settings,[k]:e.target.value})} placeholder={ph} style={{width:"100%",background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:8,padding:"9px 12px",color:"#e8e8f0",fontSize:13,outline:"none"}}/>
+        </div>)}
+      </div>
+      <div>
+        <label style={{fontSize:12,color:"#888",display:"block",marginBottom:6}}>Discord ユーザーID（マッチ時にメンションが届きます）</label>
+        <input value={settings.discordUserId} onChange={e=>setSettings({...settings,discordUserId:e.target.value})} placeholder="例: 935139396678733855" style={{width:"100%",background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:8,padding:"9px 12px",color:"#e8e8f0",fontSize:13,outline:"none",fontFamily:"monospace"}}/>
+        <div style={{fontSize:11,color:"#555",marginTop:4}}>DiscordのユーザーIDの取得：設定 → 詳細設定 → 開発者モードをオン → 自分のアイコンを右クリック → ユーザーIDをコピー</div>
+      </div>
+    </div>
+
+    {/* 管理者設定 */}
+    <div style={{background:"rgba(255,255,255,0.02)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:14,padding:20}}>
+      <h3 style={{margin:"0 0 12px",fontSize:15,color:"#888",fontWeight:700}}>🔐 管理者設定</h3>
+      {!adminUnlocked ? <div>
+        <p style={{fontSize:12,color:"#555",marginBottom:12}}>管理者パスワードを入力するとWebhook URLを変更できます。</p>
+        <div style={{display:"flex",gap:8}}>
+          <input type="password" value={adminInput} onChange={e=>setAdminInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&tryUnlock()} placeholder="管理者パスワード" style={{flex:1,background:"rgba(255,255,255,0.05)",border:`1px solid ${adminError?"rgba(248,113,113,0.5)":"rgba(255,255,255,0.1)"}`,borderRadius:8,padding:"9px 12px",color:"#e8e8f0",fontSize:13,outline:"none"}}/>
+          <button onClick={tryUnlock} style={{background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:8,padding:"9px 16px",color:"#ccc",fontSize:13,cursor:"pointer",fontWeight:600}}>解錠</button>
+        </div>
+        {adminError&&<div style={{fontSize:12,color:"#f87171",marginTop:8}}>❌ パスワードが違います</div>}
+      </div>
+      : <div>
+        <div style={{background:"rgba(34,197,94,0.08)",border:"1px solid rgba(34,197,94,0.2)",borderRadius:8,padding:"8px 12px",marginBottom:14,fontSize:12,color:"#4ade80"}}>✅ 管理者モード解錠中</div>
+        <label style={{fontSize:12,color:"#888",display:"block",marginBottom:6}}>Discord Webhook URL</label>
+        <input value={settings.webhookUrl} onChange={e=>setSettings({...settings,webhookUrl:e.target.value})} placeholder="https://discord.com/api/webhooks/..." style={{width:"100%",background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:8,padding:"10px 14px",color:"#e8e8f0",fontSize:13,outline:"none",fontFamily:"monospace",marginBottom:12}}/>
+        <button onClick={async()=>{setTestStatus(null);const ok=await sendDiscordWithMention(settings.webhookUrl||FIXED_WEBHOOK,"",{title:"🧪 カケラTrade テスト通知",color:0xa855f7,description:"Webhook接続成功！CNP×RED°コンプリートを目指しましょう🎉",footer:{text:"カケラTrade"},timestamp:new Date().toISOString()});setTestStatus(ok?"ok":"fail");}} style={{background:"rgba(88,101,242,0.25)",border:"1px solid rgba(88,101,242,0.5)",borderRadius:8,padding:"9px 20px",cursor:"pointer",color:"#818cf8",fontSize:13,fontWeight:600}}>🧪 テスト通知を送る</button>
+        {testStatus&&<div style={{marginTop:10,fontSize:12,color:testStatus==="ok"?"#4ade80":"#f87171"}}>{testStatus==="ok"?"✅ 送信成功！":"❌ 送信失敗。Webhook URLを確認してください。"}</div>}
+        <button onClick={()=>{setAdminUnlocked(false);setAdminInput("");}} style={{marginLeft:10,background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:8,padding:"9px 16px",color:"#666",fontSize:13,cursor:"pointer"}}>🔒 ロック</button>
+      </div>}
+    </div>
+  </div>;
+}
+
+function App() {
+  const [tab, setTab]        = useState("dashboard");
+  const [owned, setOwned]    = useState(Array(11).fill(0));
+  const [myWant, setMyWant]  = useState([]);
+  const [myOffer,setMyOffer] = useState([]);
+  const [contact,setContact] = useState("");
+  const [posts, setPosts]    = useState([]);
+  const [loading, setLoading]= useState(true);
+  const [posting, setPosting]= useState(false);
+  const [posted, setPosted]  = useState(false);
+  const [error, setError]    = useState(null);
+  const [filter, setFilter]  = useState("all");
+  const [notifs, setNotifs]  = useState([]);
+  const [settings, setSettings] = useState({webhookUrl:"",myUser:"",myContact:"",discordUserId:"",notifyOnMatch:true,notifyOnNew:false});
+  const [testStatus, setTestStatus] = useState(null);
+
+  useEffect(()=>{loadPosts();},[]);
+  useEffect(()=>{const t=setInterval(()=>loadPosts(true),30000);return()=>clearInterval(t);},[myWant,myOffer,settings]);
+
+  const loadPosts = async(silent=false)=>{
+    if(!silent)setLoading(true);
+    try{
+      const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+      try { await sbFetch("/posts?created_at=lt." + cutoff, { method: "DELETE", prefer: "return=minimal" }); } catch(e) {}
+      const data=await db.getPosts();
+      const parsed=data.map(parsePost);
+      if(silent){
+        setPosts(prev=>{
+          const prevIds=new Set(prev.map(p=>p.id));
+          parsed.filter(p=>!prevIds.has(p.id)).forEach(async np=>{
+            const score=calcScore(myWant,myOffer,np.want,np.offer);
+            if(score>0&&settings.notifyOnMatch){
+              addNotif(`✨ ${np.user} とマッチ！`,`マッチ度 ${score} | ${np.contact}`,true);
+              {
+              const webhookToUse = settings.webhookUrl || FIXED_WEBHOOK;
+              const mention = settings.discordUserId ? `<@${settings.discordUserId}>` : "";
+              await sendDiscordWithMention(webhookToUse, mention, {
+                title:`✨ カケラトレード マッチしました！（マッチ度: ${score}）`,
+                color:0xa855f7,
+                fields:[
+                  {name:"相手",value:`${np.avatar} **${np.user}**`,inline:true},
+                  {name:"連絡先",value:np.contact,inline:true},
+                  {name:"\u200b",value:"\u200b"},
+                  {name:"相手が渡せる → あなたが欲しい",value:np.offer.filter(id=>myWant.includes(id)).map(id=>KAKERA_LIST[id-1].emoji+" "+KAKERA_LIST[id-1].name).join(", ")||"—"},
+                  {name:"あなたが渡せる → 相手が欲しい",value:myOffer.filter(id=>np.want.includes(id)).map(id=>KAKERA_LIST[id-1].emoji+" "+KAKERA_LIST[id-1].name).join(", ")||"—"},
+                ],
+                timestamp:new Date().toISOString()
+              });
+            }
+            }else if(settings.notifyOnNew){
+              addNotif(`📬 新着: ${np.user} が募集`,`欲 ${np.want.map(id=>KAKERA_LIST[id-1].emoji).join("")} 渡 ${np.offer.map(id=>KAKERA_LIST[id-1].emoji).join("")}`);
+            }
+          });
+          return parsed;
+        });
+      }else{setPosts(parsed);}
+      setError(null);
+    }catch(e){setError("読み込みエラー: "+e.message);}
+    finally{setLoading(false);}
+  };
+
+  const addNotif=(title,body,isMatch=false)=>setNotifs(p=>[{id:Date.now(),title,body,isMatch,time:new Date().toLocaleTimeString("ja-JP",{hour:"2-digit",minute:"2-digit"}),read:false},...p]);
+
+  const handlePost=async()=>{
+    if(!myWant.length||!myOffer.length)return;
+    setPosting(true);
+    try{
+      const newId = Date.now();
+      const postContact = contact||settings.myContact||"未設定";
+      const postDiscordId = settings.discordUserId||"";
+      await db.addPost({id:newId,user:settings.myUser||"名無し",avatar:"😊",want:JSON.stringify(myWant),offer:JSON.stringify(myOffer),contact:postContact,discord_user_id:postDiscordId});
+      
+      // 既存の投稿とマッチングチェック → 相手に通知
+      const existingPosts = await db.getPosts();
+      const myNewPost = {want:myWant, offer:myOffer, user:settings.myUser||"名無し", contact:postContact};
+      for(const ep of existingPosts){
+        const epParsed = parsePost(ep);
+        if(epParsed.id === newId) continue;
+        const score = calcScore(myNewPost.want, myNewPost.offer, epParsed.want, epParsed.offer);
+        if(score > 0 && epParsed.discord_user_id){
+          // 相手にメンション通知
+          const mention = `<@${epParsed.discord_user_id}>`;
+          const mw = myNewPost.offer.filter(id=>epParsed.want.includes(id));
+          const mo = myNewPost.want.filter(id=>epParsed.offer.includes(id));
+          await sendDiscordWithMention(FIXED_WEBHOOK, mention, {
+            title:`✨ カケラトレード マッチしました！（マッチ度: ${score}）`,
+            color:0xa855f7,
+            fields:[
+              {name:"相手", value:`😊 **${myNewPost.user}**`, inline:true},
+              {name:"連絡先", value:myNewPost.contact, inline:true},
+              {name:"​", value:"​"},
+              {name:"相手が渡せる → あなたが欲しい", value:mw.map(id=>KAKERA_LIST[id-1].emoji+" "+KAKERA_LIST[id-1].name).join(", ")||"—"},
+              {name:"あなたが渡せる → 相手が欲しい", value:mo.map(id=>KAKERA_LIST[id-1].emoji+" "+KAKERA_LIST[id-1].name).join(", ")||"—"},
+            ],
+            timestamp:new Date().toISOString(),
+            footer:{text:"カケラTrade"}
+          });
+        }
+        // 自分もマッチしていたら自分にも通知
+        if(score > 0 && postDiscordId){
+          const mention = `<@${postDiscordId}>`;
+          const mw2 = epParsed.offer.filter(id=>myNewPost.want.includes(id));
+          const mo2 = myNewPost.offer.filter(id=>epParsed.want.includes(id));
+          await sendDiscordWithMention(FIXED_WEBHOOK, mention, {
+            title:`✨ カケラトレード マッチしました！（マッチ度: ${score}）`,
+            color:0xa855f7,
+            fields:[
+              {name:"相手", value:`${epParsed.avatar} **${epParsed.user}**`, inline:true},
+              {name:"連絡先", value:epParsed.contact, inline:true},
+              {name:"​", value:"​"},
+              {name:"相手が渡せる → あなたが欲しい", value:mw2.map(id=>KAKERA_LIST[id-1].emoji+" "+KAKERA_LIST[id-1].name).join(", ")||"—"},
+              {name:"あなたが渡せる → 相手が欲しい", value:mo2.map(id=>KAKERA_LIST[id-1].emoji+" "+KAKERA_LIST[id-1].name).join(", ")||"—"},
+            ],
+            timestamp:new Date().toISOString(),
+            footer:{text:"カケラTrade"}
+          });
+        }
+      }
+      
+      await loadPosts();
+      setPosted(true); setMyWant([]); setMyOffer([]); setContact("");
+    }catch(e){setError("投稿エラー: "+e.message);}
+    finally{setPosting(false);}
+  };
+
+  const handleDelete=async(id)=>{
+    try{await db.deletePost(id);setPosts(p=>p.filter(x=>x.id!==id));}
+    catch(e){setError("削除エラー: "+e.message);}
+  };
+
+  const missing=KAKERA_LIST.filter((_,i)=>owned[i]===0);
+  const surplus=KAKERA_LIST.filter((_,i)=>owned[i]>1);
+  const completed=owned.every(n=>n>=1);
+  const unread=notifs.filter(n=>!n.read).length;
+  const scored=posts.map(p=>({...p,score:calcScore(myWant,myOffer,p.want,p.offer)})).sort((a,b)=>b.score-a.score);
+  const filtered=filter==="match"?scored.filter(p=>p.score>0):scored;
+
+  const TABS=[{id:"dashboard",label:"📊 所持管理"},{id:"post",label:"📝 交換募集"},{id:"board",label:"🤝 マッチング"},{id:"settings",label:"🔔 通知設定"}];
+
+  return (
+    <div style={{minHeight:"100vh"}}>
+      <header style={{borderBottom:"1px solid rgba(255,255,255,0.06)",padding:"0 24px",display:"flex",alignItems:"center",justifyContent:"space-between",height:64,backdropFilter:"blur(12px)",position:"sticky",top:0,zIndex:100,background:"rgba(10,10,15,0.9)"}}>
+        <div style={{display:"flex",alignItems:"center",gap:12}}>
+          <div style={{width:32,height:32,background:"linear-gradient(135deg,#ff6b6b,#a855f7)",borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16}}>🔀</div>
+          <div>
+            <span style={{fontWeight:700,fontSize:18,letterSpacing:"-0.02em"}}>カケラ<span style={{color:"#a855f7"}}>Trade</span></span>
+            <span style={{fontSize:11,color:"#555",marginLeft:10}}>CNP×RED° コンプリートを目指せ</span>
+          </div>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <div style={{background:completed?"linear-gradient(90deg,#f59e0b,#ef4444)":"rgba(255,255,255,0.06)",borderRadius:20,padding:"4px 14px",fontSize:13,fontWeight:600,color:completed?"#fff":"#888"}}>
+            {completed?"🎉 コンプリート！":`${owned.filter(n=>n>=1).length} / 11 所持`}
+          </div>
+          <Bell notifs={notifs} onClear={()=>setNotifs([])}/>
+        </div>
+      </header>
+
+      <nav style={{display:"flex",gap:4,padding:"16px 24px 0",borderBottom:"1px solid rgba(255,255,255,0.05)"}}>
+        {TABS.map(t=><button key={t.id} onClick={()=>setTab(t.id)} style={{background:tab===t.id?"rgba(168,85,247,0.15)":"transparent",border:tab===t.id?"1px solid rgba(168,85,247,0.4)":"1px solid transparent",borderBottom:"none",borderRadius:"8px 8px 0 0",color:tab===t.id?"#c084fc":"#666",padding:"8px 18px",fontSize:14,fontWeight:tab===t.id?600:400,cursor:"pointer",position:"relative"}}>
+          {t.label}{t.id==="settings"&&unread>0&&<span style={{position:"absolute",top:5,right:6,width:7,height:7,borderRadius:"50%",background:"#f87171"}}/>}
+        </button>)}
+      </nav>
+
+      <main style={{padding:24,maxWidth:800,margin:"0 auto"}}>
+        {error&&<div style={{background:"rgba(248,113,113,0.1)",border:"1px solid rgba(248,113,113,0.3)",borderRadius:10,padding:"10px 16px",marginBottom:16,fontSize:13,color:"#fca5a5",display:"flex",justifyContent:"space-between"}}>
+          ⚠️ {error}<button onClick={()=>setError(null)} style={{background:"none",border:"none",color:"#f87171",cursor:"pointer"}}>✕</button>
+        </div>}
+
+        {tab==="dashboard"&&<div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginBottom:20}}>
+            {[{l:"所持済み",v:owned.filter(n=>n>=1).length,c:"#22d3ee",i:"✅"},{l:"不足",v:missing.length,c:"#f87171",i:"❌"},{l:"余剰",v:surplus.length,c:"#fbbf24",i:"🔄"}].map(c=><div key={c.l} style={{background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:12,padding:16,textAlign:"center"}}>
+              <div style={{fontSize:28,fontWeight:800,color:c.c}}>{c.v}</div>
+              <div style={{fontSize:12,color:"#666",marginTop:4}}>{c.i} {c.l}</div>
+            </div>)}
+          </div>
+          <div style={{background:"rgba(255,255,255,0.02)",border:"1px solid rgba(255,255,255,0.06)",borderRadius:12,padding:"14px 18px",marginBottom:16}}>
+            <div style={{display:"flex",justifyContent:"space-between",fontSize:12,color:"#666",marginBottom:8}}>
+              <span>コンプリートまでの進捗</span><span style={{color:"#a855f7",fontWeight:600}}>{owned.filter(n=>n>=1).length}/11</span>
+            </div>
+            <div style={{height:6,background:"rgba(255,255,255,0.06)",borderRadius:4,overflow:"hidden"}}>
+              <div style={{height:"100%",width:`${(owned.filter(n=>n>=1).length/11)*100}%`,background:"linear-gradient(90deg,#a855f7,#6366f1)",borderRadius:4,transition:"width 0.4s"}}/>
+            </div>
+            <div style={{display:"flex",gap:4,marginTop:10}}>
+              {KAKERA_LIST.map((k,i)=><div key={k.id} title={k.name} style={{flex:1,height:28,borderRadius:4,background:owned[i]>=1?`${k.color}44`:"rgba(255,255,255,0.04)",border:`1px solid ${owned[i]>=1?k.color+"66":"rgba(255,255,255,0.08)"}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,cursor:"default"}}>
+                {owned[i]>=1?k.emoji:"·"}
+              </div>)}
+            </div>
+          </div>
+          <div style={{background:"rgba(255,255,255,0.02)",border:"1px solid rgba(255,255,255,0.06)",borderRadius:16,padding:20}}>
+            <h3 style={{margin:"0 0 16px",fontSize:14,color:"#888",fontWeight:500,textTransform:"uppercase",letterSpacing:"0.05em"}}>カケラ所持数を入力</h3>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(130px,1fr))",gap:10}}>
+              {KAKERA_LIST.map((k,i)=>{
+                const n=owned[i],st=n===0?"m":n===1?"h":"s";
+                const bc={m:"rgba(248,113,113,",h:"rgba(34,211,238,",s:"rgba(251,191,36,"};
+                return <div key={k.id} style={{background:`${bc[st]}0.05)`,border:`1px solid ${bc[st]}0.2)`,borderRadius:10,padding:"14px 10px",display:"flex",flexDirection:"column",alignItems:"center",gap:8}}>
+                  <div style={{width:44,height:44,borderRadius:"50%",background:`${k.color}22`,border:`2px solid ${k.color}${n===0?"33":"88"}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,filter:n===0?"grayscale(1) opacity(0.35)":"none"}}>{k.emoji}</div>
+                  <div style={{fontSize:13,fontWeight:700,color:n===0?"#444":"#ddd"}}>{k.name}</div>
+                  <div style={{display:"flex",alignItems:"center",gap:8}}>
+                    <button onClick={()=>setOwned(p=>{const a=[...p];a[i]=Math.max(0,a[i]-1);return a;})} style={{width:26,height:26,borderRadius:7,border:"1px solid rgba(255,255,255,0.1)",background:"rgba(255,255,255,0.05)",color:"#ccc",cursor:"pointer",fontSize:16}}>−</button>
+                    <span style={{fontSize:18,fontWeight:800,minWidth:22,textAlign:"center",color:n===0?"#f87171":n>1?"#fbbf24":"#22d3ee"}}>{n}</span>
+                    <button onClick={()=>setOwned(p=>{const a=[...p];a[i]++;return a;})} style={{width:26,height:26,borderRadius:7,border:"1px solid rgba(255,255,255,0.1)",background:"rgba(255,255,255,0.05)",color:"#ccc",cursor:"pointer",fontSize:16}}>＋</button>
+                  </div>
+                  <div style={{fontSize:10,color:st==="m"?"#f87171":st==="s"?"#fbbf24":"#22d3ee",fontWeight:600}}>{st==="m"?"不足":st==="s"?`×${n} 余剰`:"所持済み"}</div>
+                </div>;
+              })}
+            </div>
+          </div>
+        </div>}
+
+        {tab==="post"&&<div>
+          {posted&&<div style={{background:"rgba(34,197,94,0.1)",border:"1px solid rgba(34,197,94,0.3)",borderRadius:12,padding:"12px 16px",marginBottom:20,color:"#4ade80",fontWeight:600}}>✅ 投稿しました！マッチングタブで確認できます。</div>}
+          {!settings.myUser&&<div style={{background:"rgba(251,191,36,0.08)",border:"1px solid rgba(251,191,36,0.25)",borderRadius:10,padding:"10px 16px",marginBottom:16,fontSize:13,color:"#fbbf24"}}>💡「通知設定」タブで名前と連絡先を設定してください。</div>}
+          <div style={{display:"grid",gap:16}}>
+            {[
+              {label:"❌ 欲しいカケラ",color:"#f87171",abg:"rgba(248,113,113,0.2)",ab:"rgba(248,113,113,0.6)",list:myWant,toggle:id=>setMyWant(p=>p.includes(id)?p.filter(x=>x!==id):[...p,id])},
+              {label:"🔄 渡せるカケラ",color:"#fbbf24",abg:"rgba(251,191,36,0.15)",ab:"rgba(251,191,36,0.5)",list:myOffer,toggle:id=>setMyOffer(p=>p.includes(id)?p.filter(x=>x!==id):[...p,id])},
+            ].map(s=><div key={s.label} style={{background:"rgba(255,255,255,0.02)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:16,padding:20}}>
+              <h3 style={{margin:"0 0 14px",fontSize:14,color:s.color,fontWeight:600}}>{s.label}</h3>
+              <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
+                {KAKERA_LIST.map(k=><button key={k.id} onClick={()=>s.toggle(k.id)} style={{background:s.list.includes(k.id)?s.abg:"rgba(255,255,255,0.04)",border:s.list.includes(k.id)?`1px solid ${s.ab}`:"1px solid rgba(255,255,255,0.08)",borderRadius:8,padding:"7px 14px",cursor:"pointer",color:s.list.includes(k.id)?s.color:"#666",fontSize:14,fontWeight:s.list.includes(k.id)?700:400,transition:"all 0.15s"}}>
+                  {k.emoji} {k.name}{s.list.includes(k.id)?" ✓":""}
+                </button>)}
+              </div>
+            </div>)}
+            <div style={{background:"rgba(255,255,255,0.02)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:16,padding:20}}>
+              <h3 style={{margin:"0 0 14px",fontSize:14,color:"#888",fontWeight:600}}>📩 連絡先</h3>
+              <input value={contact} onChange={e=>setContact(e.target.value)} placeholder={settings.myContact||"@yourname / Discord: name#1234"} style={{width:"100%",background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:8,padding:"10px 14px",color:"#e8e8f0",fontSize:14,outline:"none"}}/>
+            </div>
+            <button onClick={handlePost} disabled={!myWant.length||!myOffer.length||posting} style={{background:myWant.length&&myOffer.length&&!posting?"linear-gradient(90deg,#a855f7,#6366f1)":"rgba(255,255,255,0.06)",border:"none",borderRadius:12,padding:14,color:myWant.length&&myOffer.length&&!posting?"#fff":"#444",fontSize:15,fontWeight:700,cursor:myWant.length&&myOffer.length&&!posting?"pointer":"not-allowed"}}>
+              {posting?"⏳ 投稿中...":"🚀 募集を投稿する"}
+            </button>
+          </div>
+        </div>}
+
+        {tab==="board"&&<div>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:20}}>
+            <div style={{display:"flex",alignItems:"center",gap:10}}>
+              <h2 style={{margin:0,fontSize:18,fontWeight:700}}>交換募集一覧</h2>
+              <button onClick={()=>loadPosts()} style={{background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:8,padding:"4px 10px",fontSize:12,color:"#666",cursor:"pointer"}}>🔄 更新</button>
+            </div>
+            <div style={{display:"flex",gap:8}}>
+              {[{id:"all",l:"すべて"},{id:"match",l:"✨ マッチのみ"}].map(f=><button key={f.id} onClick={()=>setFilter(f.id)} style={{background:filter===f.id?"rgba(168,85,247,0.2)":"rgba(255,255,255,0.05)",border:filter===f.id?"1px solid rgba(168,85,247,0.5)":"1px solid rgba(255,255,255,0.08)",borderRadius:8,padding:"6px 14px",fontSize:13,color:filter===f.id?"#c084fc":"#666",cursor:"pointer",fontWeight:filter===f.id?600:400}}>{f.l}</button>)}
+            </div>
+          </div>
+          {!myWant.length&&<div style={{background:"rgba(168,85,247,0.07)",border:"1px solid rgba(168,85,247,0.2)",borderRadius:12,padding:"12px 16px",marginBottom:16,fontSize:13,color:"#a78bfa"}}>💡「交換募集」タブで欲しい/渡せるカケラを選ぶとマッチスコアが表示されます。</div>}
+          {loading?<div style={{textAlign:"center",padding:60,color:"#555"}}>⏳ 読み込み中...</div>
+          :filtered.length===0?<div style={{textAlign:"center",padding:60,color:"#555"}}><div style={{fontSize:40,marginBottom:12}}>📭</div><div>まだ募集がありません。最初に投稿してみましょう！</div></div>
+          :<div style={{display:"flex",flexDirection:"column",gap:12}}>
+            {filtered.map(post=>{
+              const im=post.score>0, isMe=post.user===(settings.myUser||"名無し");
+              return <div key={post.id} style={{background:im?"rgba(168,85,247,0.07)":"rgba(255,255,255,0.02)",border:im?"1px solid rgba(168,85,247,0.3)":"1px solid rgba(255,255,255,0.06)",borderRadius:14,padding:18,position:"relative",overflow:"hidden"}}>
+                {im&&<div style={{position:"absolute",top:0,right:0,background:"linear-gradient(135deg,#a855f7,#6366f1)",padding:"3px 14px",borderBottomLeftRadius:10,fontSize:11,fontWeight:700,color:"#fff"}}>✨ マッチ度 {post.score}</div>}
+                <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14}}>
+                  <div style={{width:40,height:40,borderRadius:"50%",background:"rgba(255,255,255,0.08)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:22}}>{post.avatar}</div>
+                  <div style={{flex:1}}>
+                    <div style={{fontWeight:700,fontSize:15}}>{post.user} {isMe&&<span style={{fontSize:11,color:"#a855f7",background:"rgba(168,85,247,0.15)",borderRadius:4,padding:"1px 6px"}}>自分</span>}</div>
+                    <div style={{fontSize:11,color:"#555"}}>{post.postedAt} · <span style={{color:post.remaining==="まもなく削除"?"#f87171":"#555"}}>{post.remaining}</span></div>
+                  </div>
+                  {isMe&&<button onClick={()=>handleDelete(post.id)} style={{background:"rgba(248,113,113,0.1)",border:"1px solid rgba(248,113,113,0.2)",borderRadius:6,padding:"4px 10px",color:"#f87171",fontSize:12,cursor:"pointer"}}>削除</button>}
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+                  {[{label:"❌ 欲しい",ids:post.want,check:id=>myOffer.includes(id),dc:"#fca5a5"},{label:"🔄 渡せる",ids:post.offer,check:id=>myWant.includes(id),dc:"#fde68a"}].map(s=><div key={s.label}>
+                    <div style={{fontSize:11,color:s.label.startsWith("❌")?"#f87171":"#fbbf24",fontWeight:600,marginBottom:6}}>{s.label}</div>
+                    <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
+                      {s.ids.map(id=>{const k=KAKERA_LIST[id-1],h=s.check(id);return <span key={id} style={{fontSize:12,borderRadius:6,padding:"3px 9px",background:h?"rgba(34,197,94,0.15)":"rgba(255,255,255,0.06)",border:h?"1px solid rgba(34,197,94,0.4)":"1px solid rgba(255,255,255,0.1)",color:h?"#4ade80":s.dc}}>{k?.emoji} {k?.name}{h?" ✓":""}</span>;})}
+                    </div>
+                  </div>)}
+                </div>
+                <div style={{marginTop:14,paddingTop:12,borderTop:"1px solid rgba(255,255,255,0.05)",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                  <span style={{fontSize:12,color:"#555"}}>📩 {post.contact}</span>
+                  {!isMe&&<button style={{background:im?"linear-gradient(90deg,#a855f7,#6366f1)":"rgba(255,255,255,0.07)",border:"none",borderRadius:8,padding:"7px 18px",color:im?"#fff":"#777",fontSize:13,fontWeight:600,cursor:"pointer"}}>{im?"✨ 連絡する":"💬 連絡する"}</button>}
+                </div>
+              </div>;
+            })}
+          </div>}
+        </div>}
+
+        {tab==="settings"&&<SettingsTab settings={settings} setSettings={setSettings} testStatus={testStatus} setTestStatus={setTestStatus}/>}
+      </main>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
